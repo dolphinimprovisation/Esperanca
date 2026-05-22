@@ -13,6 +13,19 @@ import { cotarComIA } from "../lib/bot";
 const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null, urls: {} };
 const fmtR = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");
 
+// Estimativa grosseira de custo em USD por sessão.
+// Inputs/outputs aproximados por item; web_search ~$0.01/uso, max ~5 usos por item.
+function estimarCusto(nItens, nForns, modelo) {
+  const tokensInPorItem  = 600 + nForns * 60;
+  const tokensOutPorItem = 200 + nForns * 30;
+  const precosM = modelo === "sonnet"
+    ? { in: 3,    out: 15 }    // Sonnet $/M tokens
+    : { in: 0.8,  out: 4 };    // Haiku
+  const tokensUsd = nItens * (tokensInPorItem * precosM.in + tokensOutPorItem * precosM.out) / 1_000_000;
+  const buscasUsd = nItens * Math.min(nForns, 5) * 0.01;
+  return tokensUsd + buscasUsd;
+}
+
 export default function Compras() {
   const [dados, setDados]                 = useState({ medicamentos: [], higiene: [], sondagem: [] });
   const [fornecedores, setFornecedores]   = useState([]);
@@ -210,9 +223,11 @@ export default function Compras() {
     tarefas.forEach((t) => t.fornsDoItem.forEach((f) => { fornsSet[f.id] = f; }));
     const fornsUnicos = Object.values(fornsSet);
 
+    const custoEst = estimarCusto(tarefas.length, fornsUnicos.length, modeloIA);
     if (!confirm(
-      `Cotar ${tarefas.length} item(ns) em ${fornsUnicos.length} fornecedor(es) usando ${modeloIA === "haiku" ? "Claude Haiku" : "Claude Sonnet"}?\n\n` +
-      `(Fase 6B: retorno ainda é simulado/fake — só para validar o fluxo. A busca real vem na 6C.)`
+      `Cotar ${tarefas.length} item(ns) em ${fornsUnicos.length} fornecedor(es) com ${modeloIA === "haiku" ? "Claude Haiku" : "Claude Sonnet"}?\n\n` +
+      `Custo estimado: ~US$ ${custoEst.toFixed(3)} (~R$ ${(custoEst * 5).toFixed(2)}).\n\n` +
+      `Pode demorar 10-30 segundos. A IA vai pesquisar em cada loja e preencher preços + URLs.`
     )) return;
 
     setCotandoIA(true);
@@ -256,6 +271,8 @@ export default function Compras() {
         nForns: fornsUnicos.length,
         stub: resp.stub,
         modelo: resp.modelo,
+        erros: resp.erros || [],
+        usage: resp.usage,
       });
     } catch (e) {
       setResultadoIA({ ok: false, erro: e.message || String(e) });
@@ -318,9 +335,9 @@ export default function Compras() {
             <Sparkles size={13} /> {cotandoIA ? "Buscando preços..." : "Iniciar cotação"}
           </button>
           {resultadoIA && (
-            <span className="mono" style={{ fontSize: 12, color: resultadoIA.ok ? "#1a7544" : "#a32d2d", marginLeft: 6 }}>
+            <span className="mono" style={{ fontSize: 12, color: resultadoIA.ok ? (resultadoIA.erros?.length ? "#9a6b15" : "#1a7544") : "#a32d2d", marginLeft: 6 }}>
               {resultadoIA.ok
-                ? `✓ ${resultadoIA.nItens} item(ns) × ${resultadoIA.nForns} fornecedor(es)${resultadoIA.stub ? " (stub fake)" : ""}`
+                ? `✓ ${resultadoIA.nItens} item(ns) × ${resultadoIA.nForns} fornecedor(es)${resultadoIA.stub ? " (stub fake)" : ""}${resultadoIA.erros?.length ? ` · ${resultadoIA.erros.length} falha(s)` : ""}`
                 : `Erro: ${resultadoIA.erro}`}
             </span>
           )}
