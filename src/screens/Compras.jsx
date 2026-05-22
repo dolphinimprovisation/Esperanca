@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ShoppingCart, ChevronDown, ChevronRight, Check, ExternalLink, Receipt, Link2 } from "lucide-react";
+import { ShoppingCart, ChevronDown, ChevronRight, Check, ExternalLink, Receipt, Link2, Sparkles } from "lucide-react";
 import { CATEGORIAS, catInfo, calcularStatus, CORES_STATUS, qtdSugerida } from "../lib/constantes";
 import { listarItens } from "../lib/itens";
 import { listarFornecedores, linkBusca } from "../lib/fornecedores";
@@ -8,6 +8,7 @@ import { listarCompras, criarCompra, removerCompra } from "../lib/compras";
 import PctBadge from "../components/PctBadge";
 import ModalCompra from "../components/ModalCompra";
 import ModalUrlFixa from "../components/ModalUrlFixa";
+import { cotarComIA } from "../lib/bot";
 
 const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null, urls: {} };
 const fmtR = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");
@@ -26,6 +27,9 @@ export default function Compras() {
   const [expandido, setExpandido]         = useState({});
   const [modalCompra, setModalCompra]     = useState(null);
   const [modalUrl, setModalUrl]           = useState(null); // { item, forn, urlAtual }
+  const [modeloIA, setModeloIA]           = useState("haiku");
+  const [cotandoIA, setCotandoIA]         = useState(false);
+  const [resultadoIA, setResultadoIA]     = useState(null);
 
   async function recarregar() {
     try {
@@ -186,6 +190,80 @@ export default function Compras() {
     }
   }
 
+  async function acionarBotIA() {
+    // monta payload: para cada item da lista visível, com ao menos 1 fornecedor marcado
+    const tarefas = lista
+      .map((item) => {
+        const c = cotDe(item.id);
+        const fornsDoItem = fornOrdenados.filter((f) => c.escolhidos.includes(f.id));
+        return { item, fornsDoItem };
+      })
+      .filter((t) => t.fornsDoItem.length > 0);
+
+    if (tarefas.length === 0) {
+      alert("Marca primeiro pelo menos 1 fornecedor em cada item que queres cotar.");
+      return;
+    }
+
+    // união de todos os fornecedores envolvidos
+    const fornsSet = {};
+    tarefas.forEach((t) => t.fornsDoItem.forEach((f) => { fornsSet[f.id] = f; }));
+    const fornsUnicos = Object.values(fornsSet);
+
+    if (!confirm(
+      `Cotar ${tarefas.length} item(ns) em ${fornsUnicos.length} fornecedor(es) usando ${modeloIA === "haiku" ? "Claude Haiku" : "Claude Sonnet"}?\n\n` +
+      `(Fase 6B: retorno ainda é simulado/fake — só para validar o fluxo. A busca real vem na 6C.)`
+    )) return;
+
+    setCotandoIA(true);
+    setResultadoIA(null);
+    try {
+      const payload = {
+        modelo: modeloIA,
+        itens: tarefas.map(({ item }) => ({
+          id: item.id, nome: item.nome, descricao: item.descricao || "",
+        })),
+        fornecedores: fornsUnicos.map((f) => ({
+          id: f.id, nome: f.nome, busca: f.busca || "", site: f.site || "",
+        })),
+      };
+
+      const resp = await cotarComIA(payload);
+      const resultados = resp.resultados || {};
+
+      // aplica em cada item: preços e urls dos fornecedores do item
+      const novosCot = { ...cotacao };
+      for (const { item, fornsDoItem } of tarefas) {
+        const atual = novosCot[item.id] || EMPTY_COT;
+        const novosPrecos = { ...(atual.precos || {}) };
+        const novasUrls   = { ...(atual.urls   || {}) };
+        const porForn = resultados[item.id] || {};
+        for (const f of fornsDoItem) {
+          const r = porForn[f.id];
+          if (!r) continue;
+          if (r.preco != null) novosPrecos[f.id] = String(r.preco).replace(".", ",");
+          if (r.url) novasUrls[f.id] = r.url;
+        }
+        const novo = { ...atual, precos: novosPrecos, urls: novasUrls };
+        novosCot[item.id] = novo;
+        // persiste cada um (paralelo)
+        persistir(item.id, novo);
+      }
+      setCotacao(novosCot);
+      setResultadoIA({
+        ok: true,
+        nItens: tarefas.length,
+        nForns: fornsUnicos.length,
+        stub: resp.stub,
+        modelo: resp.modelo,
+      });
+    } catch (e) {
+      setResultadoIA({ ok: false, erro: e.message || String(e) });
+    } finally {
+      setCotandoIA(false);
+    }
+  }
+
   async function desfazerCompra(item) {
     if (!confirm(`Desfazer a compra registrada de "${item.nome}"?`)) return;
     // remove o registro mais recente desse item
@@ -226,6 +304,26 @@ export default function Compras() {
           <button className="mono" style={chip(incluirAtencao)} onClick={() => setIncluirAten((v) => !v)}>
             {incluirAtencao ? "✓ " : ""}Incluir "Atenção"
           </button>
+        </div>
+
+        {/* Bot IA */}
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", paddingTop: 4, borderTop: "1px dashed #eeebe3", marginTop: 4 }}>
+          <span className="mono" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#9b9b94", marginRight: 4, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Sparkles size={11} /> Cotar com IA
+          </span>
+          <button className="mono" style={chip(modeloIA === "haiku")}  onClick={() => setModeloIA("haiku")}  title="Mais barato (~R$ 0,75 por sessão)">Haiku</button>
+          <button className="mono" style={chip(modeloIA === "sonnet")} onClick={() => setModeloIA("sonnet")} title="Mais 'esperto' (~R$ 2,25 por sessão)">Sonnet</button>
+          <button onClick={acionarBotIA} disabled={cotandoIA}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "none", borderRadius: 6, background: cotandoIA ? "#c9c6bd" : "#2b2b28", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: cotandoIA ? "default" : "pointer", fontFamily: "'IBM Plex Sans', sans-serif" }}>
+            <Sparkles size={13} /> {cotandoIA ? "Buscando preços..." : "Iniciar cotação"}
+          </button>
+          {resultadoIA && (
+            <span className="mono" style={{ fontSize: 12, color: resultadoIA.ok ? "#1a7544" : "#a32d2d", marginLeft: 6 }}>
+              {resultadoIA.ok
+                ? `✓ ${resultadoIA.nItens} item(ns) × ${resultadoIA.nForns} fornecedor(es)${resultadoIA.stub ? " (stub fake)" : ""}`
+                : `Erro: ${resultadoIA.erro}`}
+            </span>
+          )}
         </div>
       </div>
 
