@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Package, ShoppingCart, History, Store } from "lucide-react";
 import Estoque from "./screens/Estoque";
+import Compras from "./screens/Compras";
 
 function NavBtn({ ativo, onClick, Icone, label, badge }) {
   return (
@@ -65,7 +66,7 @@ export default function App() {
         </div>
 
         {tela === "estoque"      && <Estoque />}
-        {tela === "compras"      && <EmBreve titulo="Compras / Cotação — próxima fase" />}
+        {tela === "compras"      && <Compras />}
         {tela === "historico"    && <EmBreve titulo="Histórico — próxima fase" />}
         {tela === "fornecedores" && <EmBreve titulo="Fornecedores — próxima fase" />}
       </div>
