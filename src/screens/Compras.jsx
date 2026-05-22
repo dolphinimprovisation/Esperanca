@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ShoppingCart, ChevronDown, ChevronRight, Check, ExternalLink, Receipt } from "lucide-react";
+import { ShoppingCart, ChevronDown, ChevronRight, Check, ExternalLink, Receipt, Link2 } from "lucide-react";
 import { CATEGORIAS, catInfo, calcularStatus, CORES_STATUS, qtdSugerida } from "../lib/constantes";
 import { listarItens } from "../lib/itens";
 import { listarFornecedores, linkBusca } from "../lib/fornecedores";
@@ -7,8 +7,9 @@ import { listarCotacoes, salvarCotacao } from "../lib/cotacoes";
 import { listarCompras, criarCompra, removerCompra } from "../lib/compras";
 import PctBadge from "../components/PctBadge";
 import ModalCompra from "../components/ModalCompra";
+import ModalUrlFixa from "../components/ModalUrlFixa";
 
-const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null };
+const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null, urls: {} };
 const fmtR = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");
 
 export default function Compras() {
@@ -24,6 +25,7 @@ export default function Compras() {
   const [ordenar, setOrdenar]             = useState("urgencia");
   const [expandido, setExpandido]         = useState({});
   const [modalCompra, setModalCompra]     = useState(null);
+  const [modalUrl, setModalUrl]           = useState(null); // { item, forn, urlAtual }
 
   async function recarregar() {
     try {
@@ -122,13 +124,31 @@ export default function Compras() {
     persistir(itemId, cotDe(itemId));
   }
 
+  // Resolve a URL para abrir: prioriza urls[fornId] (fixa) e cai no template do fornecedor.
+  function urlParaAbrir(item, forn) {
+    const c = cotDe(item.id);
+    if (c.urls && c.urls[forn.id]) return c.urls[forn.id];
+    return linkBusca(forn, item.nome);
+  }
+
+  async function salvarUrlFixa(itemId, fornId, url) {
+    const atual = cotDe(itemId);
+    const urls = { ...(atual.urls || {}) };
+    if (url) urls[fornId] = url;
+    else delete urls[fornId];
+    const novo = { ...atual, urls };
+    setCotacao((prev) => ({ ...prev, [itemId]: novo }));
+    await persistir(itemId, novo);
+    setModalUrl(null);
+  }
+
   function cotarTodos(item) {
     const c = cotDe(item.id);
-    const marcados = fornOrdenados.filter((f) => c.escolhidos.includes(f.id) && (f.busca || f.site));
+    const marcados = fornOrdenados.filter((f) => c.escolhidos.includes(f.id) && (f.busca || f.site || (c.urls && c.urls[f.id])));
     if (marcados.length === 0) return;
     let bloqueados = 0;
     marcados.forEach((f) => {
-      const url = linkBusca(f, item.nome);
+      const url = urlParaAbrir(item, f);
       if (!url) return;
       const win = window.open(url, "_blank", "noopener");
       if (!win) bloqueados++;
@@ -312,13 +332,26 @@ export default function Compras() {
                                 <div className="mono" style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.nome}</div>
                                 {f.obs ? <div className="mono" style={{ fontSize: 11, color: "#9b9b94" }}>{f.obs}</div> : null}
                               </div>
-                              {marcado && (f.busca || f.site) && (
-                                <button onClick={(e) => { e.stopPropagation(); const url = linkBusca(f, item.nome); if (url) window.open(url, "_blank", "noopener"); }}
-                                  className="mono" title={`Abrir "${item.nome}" em ${f.nome}`}
-                                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #c5d8cc", borderRadius: 6, background: "#fff", color: "#1a7544", fontSize: 11.5, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
-                                  abrir <ExternalLink size={11} />
-                                </button>
-                              )}
+                              {marcado && (() => {
+                                const urlFixa = c.urls && c.urls[f.id];
+                                const podeAbrir = !!(urlFixa || f.busca || f.site);
+                                return (
+                                  <>
+                                    <button onClick={(e) => { e.stopPropagation(); setModalUrl({ item, forn: f, urlAtual: urlFixa || "" }); }}
+                                      className="icon-btn" title={urlFixa ? "URL fixa salva — clica para editar" : "Salvar URL fixa do produto"}
+                                      style={{ color: urlFixa ? "#1a7544" : "#9b9b94", flexShrink: 0, padding: 2 }}>
+                                      <Link2 size={14} />
+                                    </button>
+                                    {podeAbrir && (
+                                      <button onClick={(e) => { e.stopPropagation(); const url = urlParaAbrir(item, f); if (url) window.open(url, "_blank", "noopener"); }}
+                                        className="mono" title={urlFixa ? `Abrir URL fixa em ${f.nome}` : `Abrir busca por "${item.nome}" em ${f.nome}`}
+                                        style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #c5d8cc", borderRadius: 6, background: "#fff", color: "#1a7544", fontSize: 11.5, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                                        abrir <ExternalLink size={11} />
+                                      </button>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                             {marcado && (
                               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
@@ -384,6 +417,16 @@ export default function Compras() {
             );
           })}
         </div>
+      )}
+
+      {modalUrl && (
+        <ModalUrlFixa
+          itemNome={modalUrl.item.nome}
+          fornNome={modalUrl.forn.nome}
+          urlAtual={modalUrl.urlAtual}
+          onSalvar={(novaUrl) => salvarUrlFixa(modalUrl.item.id, modalUrl.forn.id, novaUrl)}
+          onFechar={() => setModalUrl(null)}
+        />
       )}
 
       {modalCompra && (
