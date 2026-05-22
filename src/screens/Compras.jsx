@@ -4,14 +4,18 @@ import { CATEGORIAS, catInfo, calcularStatus, CORES_STATUS, qtdSugerida } from "
 import { listarItens } from "../lib/itens";
 import { listarFornecedores, linkBusca } from "../lib/fornecedores";
 import { listarCotacoes, salvarCotacao } from "../lib/cotacoes";
+import { listarCompras, criarCompra, removerCompra } from "../lib/compras";
 import PctBadge from "../components/PctBadge";
+import ModalCompra from "../components/ModalCompra";
 
 const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null };
+const fmtR = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");
 
 export default function Compras() {
   const [dados, setDados]                 = useState({ medicamentos: [], higiene: [], sondagem: [] });
   const [fornecedores, setFornecedores]   = useState([]);
   const [cotacao, setCotacao]             = useState({});
+  const [historico, setHistorico]         = useState([]);
   const [carregando, setCarregando]       = useState(true);
   const [erro, setErro]                   = useState(null);
 
@@ -19,14 +23,21 @@ export default function Compras() {
   const [incluirAtencao, setIncluirAten]  = useState(false);
   const [ordenar, setOrdenar]             = useState("urgencia");
   const [expandido, setExpandido]         = useState({});
+  const [modalCompra, setModalCompra]     = useState(null);
 
   async function recarregar() {
     try {
       setErro(null);
-      const [d, fs, cs] = await Promise.all([listarItens(), listarFornecedores(), listarCotacoes()]);
+      const [d, fs, cs, hs] = await Promise.all([
+        listarItens(),
+        listarFornecedores(),
+        listarCotacoes(),
+        listarCompras(),
+      ]);
       setDados(d);
       setFornecedores(fs);
       setCotacao(cs);
+      setHistorico(hs);
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
@@ -75,6 +86,15 @@ export default function Compras() {
   const cotDe = (itemId) => cotacao[itemId] || EMPTY_COT;
   const toggle = (id) => setExpandido((e) => ({ ...e, [id]: !e[id] }));
 
+  function menorHistorico(itemId) {
+    const compras = historico.filter((h) => h.itemId === itemId && h.qtd > 0);
+    if (!compras.length) return null;
+    return Math.min(...compras.map((h) => h.valor / h.qtd));
+  }
+  function historicoDoItem(itemId) {
+    return historico.filter((h) => h.itemId === itemId);
+  }
+
   async function persistir(itemId, novo) {
     try {
       await salvarCotacao(itemId, novo);
@@ -119,6 +139,46 @@ export default function Compras() {
         `Para resolver: clica no ícone "Pop-ups bloqueados" na barra de endereço e escolhe ` +
         `"Permitir sempre pop-ups deste site". Depois clica em Cotar de novo.`
       );
+    }
+  }
+
+  async function registrarCompra(item, payload) {
+    const reg = {
+      itemId: item.id,
+      itemNome: item.nome,
+      categoria: item.catNome,
+      ...payload,
+    };
+    try {
+      const { id, ts } = await criarCompra(reg);
+      const linha = { ...reg, id, ts, data: new Date().toLocaleDateString("pt-BR") };
+      setHistorico((prev) => [linha, ...prev]);
+      const atual = cotDe(item.id);
+      const novo = {
+        ...atual,
+        comprado: { fornId: payload.fornId, valor: payload.valor, qtd: payload.qtd, data: linha.data },
+      };
+      setCotacao((prev) => ({ ...prev, [item.id]: novo }));
+      await persistir(item.id, novo);
+      setModalCompra(null);
+    } catch (e) {
+      alert("Erro ao registrar compra: " + (e.message || e));
+    }
+  }
+
+  async function desfazerCompra(item) {
+    if (!confirm(`Desfazer a compra registrada de "${item.nome}"?`)) return;
+    // remove o registro mais recente desse item
+    const ultima = historico.find((h) => h.itemId === item.id);
+    try {
+      if (ultima) await removerCompra(ultima.id);
+      setHistorico((prev) => prev.filter((h) => h.id !== ultima?.id));
+      const atual = cotDe(item.id);
+      const novo = { ...atual, comprado: null };
+      setCotacao((prev) => ({ ...prev, [item.id]: novo }));
+      await persistir(item.id, novo);
+    } catch (e) {
+      alert("Erro ao desfazer: " + (e.message || e));
     }
   }
 
@@ -169,8 +229,12 @@ export default function Compras() {
             const c = cotDe(item.id);
             const aberto = !!expandido[item.id];
             const nEscolhidos = c.escolhidos.length;
+            const comprado = c.comprado;
+            const fornComprado = comprado ? fornecedores.find((f) => f.id === comprado.fornId) : null;
+            const menorHist = menorHistorico(item.id);
+            const histItem = historicoDoItem(item.id);
             return (
-              <div key={item.categoria + item.id} style={{ borderTop: "1px solid #f0ede5" }}>
+              <div key={item.categoria + item.id} style={{ borderTop: "1px solid #f0ede5", background: comprado ? "#f7faf8" : "transparent" }}>
                 {/* Linha do item */}
                 <div className="row" onClick={() => toggle(item.id)}
                   style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 20px", cursor: "pointer" }}>
@@ -186,6 +250,11 @@ export default function Compras() {
                       {nEscolhidos > 0 ? ` · ${nEscolhidos} fornecedor${nEscolhidos > 1 ? "es" : ""}` : ""}
                     </div>
                   </div>
+                  {comprado && (
+                    <span className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 600, color: "#1a7544", background: "#d6efe0", padding: "4px 10px", borderRadius: 20, flexShrink: 0 }}>
+                      <Check size={13} strokeWidth={3} /> COMPRADO
+                    </span>
+                  )}
                   <span className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: cor.bg, color: cor.fg, fontSize: 11.5, fontWeight: 600, padding: "4px 10px", borderRadius: 20, flexShrink: 0 }}>
                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: cor.dot }} /> {item.status.label}
                   </span>
@@ -194,6 +263,31 @@ export default function Compras() {
                 {/* Expandido */}
                 {aberto && (
                   <div style={{ padding: "0 20px 18px 50px" }}>
+                    {/* Faixa de compra registrada */}
+                    {comprado && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "#eaf5ee", border: "1px solid #cbe6d6", borderRadius: 8, padding: "10px 14px", marginBottom: 14 }}>
+                        <Check size={16} color="#1a7544" strokeWidth={3} />
+                        <span className="mono" style={{ fontSize: 13, color: "#1a7544" }}>
+                          Comprado em <b>{fornComprado ? fornComprado.nome : "—"}</b> por <b>{fmtR(comprado.valor)}</b> ({comprado.qtd} un) · {comprado.data}
+                        </span>
+                        <span className="mono" style={{ fontSize: 12, color: "#5b6470" }}>
+                          Atualize o estoque na aba Estoque quando a entrega chegar.
+                        </span>
+                        <div style={{ flex: 1 }} />
+                        <button onClick={(e) => { e.stopPropagation(); desfazerCompra(item); }} className="mono"
+                          style={{ padding: "5px 11px", border: "1px solid #c9c6bd", borderRadius: 6, background: "#fff", color: "#5b6470", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                          Desfazer
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Menor preço já pago */}
+                    {menorHist != null && (
+                      <div className="mono" style={{ fontSize: 12.5, color: "#5b6470", marginBottom: 10 }}>
+                        Menor preço já pago (unitário): <b style={{ color: "#1a7544" }}>{fmtR(menorHist)}</b>
+                      </div>
+                    )}
+
                     <div className="mono" style={{ fontSize: 12, color: "#9b9b94", marginBottom: 10 }}>
                       Marque os fornecedores que vendem este item. Anote o preço que achar em cada um.
                     </div>
@@ -202,8 +296,10 @@ export default function Compras() {
                         const marcado = c.escolhidos.includes(f.id);
                         const preco = c.precos[f.id] || "";
                         const precoNum = parseFloat(String(preco).replace(",", ".")) || 0;
-                        // pct vs. menor histórico — em 2B; por agora null
-                        const pct = null;
+                        let pct = null;
+                        if (precoNum > 0 && menorHist != null && menorHist > 0) {
+                          pct = (precoNum - menorHist) / menorHist;
+                        }
                         return (
                           <div key={f.id} style={{ border: marcado ? "1px solid #b9d9c6" : "1px solid #eeebe3", background: marcado ? "#f2f8f4" : "#fbfaf7", borderRadius: 8, padding: "9px 12px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -254,13 +350,34 @@ export default function Compras() {
                             style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderRadius: 6, background: "transparent", color: marcadosComSite > 0 ? "#2b2b28" : "#c9c6bd", borderColor: marcadosComSite > 0 ? "#2b2b28" : "#dedbd2", fontSize: 13, fontWeight: 600, cursor: marcadosComSite > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
                             <ExternalLink size={15} /> Cotar {marcadosComSite > 0 ? `(${marcadosComSite})` : ""}
                           </button>
-                          <button disabled title="Próxima fase (2B)"
-                            style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "none", borderRadius: 6, background: "#c9c6bd", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
-                            <Receipt size={15} /> Registrar compra
+                          <button onClick={(e) => { e.stopPropagation(); setModalCompra(item); }} disabled={nEscolhidos === 0}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "none", borderRadius: 6, background: nEscolhidos > 0 ? "#2b2b28" : "#c9c6bd", color: "#fff", fontSize: 13, fontWeight: 600, cursor: nEscolhidos > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                            <Receipt size={15} /> {comprado ? "Editar compra" : "Registrar compra"}
                           </button>
                         </div>
                       );
                     })()}
+
+                    {/* Mini-histórico */}
+                    {histItem.length > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        <div className="mono" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#9b9b94", marginBottom: 6 }}>
+                          Histórico de preços deste item
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {histItem.map((h) => (
+                            <div key={h.id} className="mono" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, color: "#5b6470", padding: "4px 0" }}>
+                              <span style={{ color: "#9b9b94", minWidth: 80 }}>{h.data}</span>
+                              <span style={{ flex: 1 }}>{h.fornNome}</span>
+                              <span style={{ color: "#9b9b94" }}>{h.qtd} un</span>
+                              <b style={{ minWidth: 80, textAlign: "right", color: menorHist != null && (h.valor / h.qtd) <= menorHist + 0.0001 ? "#1a7544" : "#2b2b28" }}>
+                                {fmtR(h.valor)}
+                              </b>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -269,9 +386,19 @@ export default function Compras() {
         </div>
       )}
 
+      {modalCompra && (
+        <ModalCompra
+          item={modalCompra}
+          fornecedores={fornecedores}
+          cot={cotDe(modalCompra.id)}
+          menorHist={menorHistorico(modalCompra.id)}
+          onRegistrar={(payload) => registrarCompra(modalCompra, payload)}
+          onFechar={() => setModalCompra(null)}
+        />
+      )}
+
       <div className="mono" style={{ padding: "14px 20px", borderTop: "1px solid #eeebe3", fontSize: 12.5, color: "#5b6470", background: "#fbfaf7", borderRadius: "0 0 10px 10px", lineHeight: 1.6 }}>
-        Marque os fornecedores → <b>Cotar</b> abre os sites → anote o preço de cada um.
-        <span style={{ color: "#9b9b94" }}> (Registrar compra + histórico vêm na próxima fase.)</span>
+        Fluxo: marque os fornecedores → <b>Cotar</b> abre os sites → anote o preço de cada um (a % mostra se está caro/barato vs. o melhor já pago) → <b>Registrar compra</b> grava no histórico e marca como comprado.
       </div>
     </div>
   );
