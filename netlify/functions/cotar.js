@@ -73,8 +73,8 @@ Formato exato:
 export default async (req) => {
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
-  const user = await verificarAuth(req);
-  if (!user) return jsonError(401, "Login obrigatório para usar o bot.");
+  const auth = await verificarAuth(req);
+  if (!auth.ok) return jsonError(401, `Login obrigatório. (${auth.motivo})`);
 
   let payload;
   try { payload = await req.json(); }
@@ -190,17 +190,19 @@ function parseJsonBlock(text) {
 async function verificarAuth(req) {
   const auth = req.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "");
-  if (!token) return null;
-  const url = process.env.VITE_SUPABASE_URL;
-  const key = process.env.VITE_SUPABASE_KEY;
-  if (!url || !key) return null;
+  if (!token) return { ok: false, motivo: "sem token na request" };
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.VITE_SUPABASE_KEY || process.env.SUPABASE_KEY;
+  if (!url) return { ok: false, motivo: "VITE_SUPABASE_URL ausente nas vars de Functions do Netlify" };
+  if (!key) return { ok: false, motivo: "VITE_SUPABASE_KEY ausente nas vars de Functions do Netlify" };
   try {
     const sb = createClient(url, key);
     const { data, error } = await sb.auth.getUser(token);
-    if (error || !data.user) return null;
-    return data.user;
-  } catch {
-    return null;
+    if (error) return { ok: false, motivo: `getUser falhou: ${error.message}` };
+    if (!data.user) return { ok: false, motivo: "token inválido ou expirado — sai e entra de novo" };
+    return { ok: true, user: data.user };
+  } catch (e) {
+    return { ok: false, motivo: `excecao: ${e.message || e}` };
   }
 }
 
