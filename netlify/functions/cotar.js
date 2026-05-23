@@ -14,7 +14,6 @@
 //   VITE_SUPABASE_URL / VITE_SUPABASE_KEY
 
 import Anthropic from "@anthropic-ai/sdk";
-import { createClient } from "@supabase/supabase-js";
 
 const MODELS = {
   haiku:  "claude-haiku-4-5",
@@ -193,14 +192,22 @@ async function verificarAuth(req) {
   if (!token) return { ok: false, motivo: "sem token na request" };
   const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.VITE_SUPABASE_KEY || process.env.SUPABASE_KEY;
-  if (!url) return { ok: false, motivo: "VITE_SUPABASE_URL ausente nas vars de Functions do Netlify" };
-  if (!key) return { ok: false, motivo: "VITE_SUPABASE_KEY ausente nas vars de Functions do Netlify" };
+  if (!url) return { ok: false, motivo: "VITE_SUPABASE_URL ausente" };
+  if (!key) return { ok: false, motivo: "VITE_SUPABASE_KEY ausente" };
   try {
-    const sb = createClient(url, key);
-    const { data, error } = await sb.auth.getUser(token);
-    if (error) return { ok: false, motivo: `getUser falhou: ${error.message}` };
-    if (!data.user) return { ok: false, motivo: "token inválido ou expirado — sai e entra de novo" };
-    return { ok: true, user: data.user };
+    // Chama direto a API de auth (evita supabase-js, que requer 'ws' no Node 20)
+    const resp = await fetch(`${url.replace(/\/$/, "")}/auth/v1/user`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "apikey": key,
+      },
+    });
+    if (!resp.ok) {
+      return { ok: false, motivo: `token inválido (${resp.status}) — sai e entra de novo` };
+    }
+    const user = await resp.json();
+    if (!user || !user.id) return { ok: false, motivo: "resposta sem user" };
+    return { ok: true, user };
   } catch (e) {
     return { ok: false, motivo: `excecao: ${e.message || e}` };
   }
