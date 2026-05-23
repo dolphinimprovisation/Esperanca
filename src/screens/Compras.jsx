@@ -8,7 +8,9 @@ import { listarCompras, criarCompra, removerCompra } from "../lib/compras";
 import PctBadge from "../components/PctBadge";
 import ModalCompra from "../components/ModalCompra";
 import ModalUrlFixa from "../components/ModalUrlFixa";
+import ModalDescobertas from "../components/ModalDescobertas";
 import { cotarComIA } from "../lib/bot";
+import { criarFornecedor } from "../lib/fornecedores";
 
 const EMPTY_COT = { escolhidos: [], precos: {}, comprado: null, urls: {} };
 const fmtR = (v) => "R$ " + Number(v).toFixed(2).replace(".", ",");
@@ -41,8 +43,10 @@ export default function Compras() {
   const [modalCompra, setModalCompra]     = useState(null);
   const [modalUrl, setModalUrl]           = useState(null); // { item, forn, urlAtual }
   const [modeloIA, setModeloIA]           = useState("haiku");
+  const [descobertaIA, setDescobertaIA]   = useState(false);
   const [cotandoIA, setCotandoIA]         = useState(false);
   const [resultadoIA, setResultadoIA]     = useState(null);
+  const [modalDescobertas, setModalDescobertas] = useState(null);
 
   async function recarregar() {
     try {
@@ -203,11 +207,15 @@ export default function Compras() {
     }
   }
 
-  // alvo = null → todos os itens visíveis com forns marcados
-  // alvo = item específico → só esse item (com os forns que ele tem marcados)
+  // alvo = null → todos os itens visíveis (com forns marcados no modo cotação, ou todos no modo descoberta)
+  // alvo = item específico → só esse item
   async function acionarBotIA(alvo = null) {
     let tarefas;
-    if (alvo) {
+    if (descobertaIA) {
+      // No modo descoberta não precisa de fornecedores marcados.
+      tarefas = alvo ? [{ item: alvo, fornsDoItem: [] }] : lista.map((item) => ({ item, fornsDoItem: [] }));
+      if (tarefas.length === 0) { alert("Não há itens para descobrir."); return; }
+    } else if (alvo) {
       const c = cotDe(alvo.id);
       const fornsDoItem = fornOrdenados.filter((f) => c.escolhidos.includes(f.id));
       if (fornsDoItem.length === 0) {
@@ -229,16 +237,18 @@ export default function Compras() {
       }
     }
 
-    // união de todos os fornecedores envolvidos
     const fornsSet = {};
     tarefas.forEach((t) => t.fornsDoItem.forEach((f) => { fornsSet[f.id] = f; }));
     const fornsUnicos = Object.values(fornsSet);
 
-    const custoEst = estimarCusto(tarefas.length, fornsUnicos.length, modeloIA);
+    const nForns = descobertaIA ? 5 : fornsUnicos.length;
+    const custoEst = estimarCusto(tarefas.length, nForns, modeloIA);
+    const modeloNome = modeloIA === "haiku" ? "Claude Haiku" : "Claude Sonnet";
+    const msgConf = descobertaIA
+      ? `Descobrir lojas (até 5 cada) para ${tarefas.length} item(ns) com ${modeloNome}?`
+      : `Cotar ${tarefas.length} item(ns) em ${fornsUnicos.length} fornecedor(es) com ${modeloNome}?`;
     if (!confirm(
-      `Cotar ${tarefas.length} item(ns) em ${fornsUnicos.length} fornecedor(es) com ${modeloIA === "haiku" ? "Claude Haiku" : "Claude Sonnet"}?\n\n` +
-      `Custo estimado: ~US$ ${custoEst.toFixed(3)} (~R$ ${(custoEst * 5).toFixed(2)}).\n\n` +
-      `Pode demorar 10-30 segundos. A IA vai pesquisar em cada loja e preencher preços + URLs.`
+      `${msgConf}\n\nCusto estimado: ~US$ ${custoEst.toFixed(3)} (~R$ ${(custoEst * 5).toFixed(2)}).\n\nPode demorar 10-30 segundos.`
     )) return;
 
     setCotandoIA(true);
@@ -246,50 +256,121 @@ export default function Compras() {
     try {
       const payload = {
         modelo: modeloIA,
+        descoberta: descobertaIA,
         itens: tarefas.map(({ item }) => ({
           id: item.id, nome: item.nome, descricao: item.descricao || "",
         })),
-        fornecedores: fornsUnicos.map((f) => ({
+        fornecedores: descobertaIA ? [] : fornsUnicos.map((f) => ({
           id: f.id, nome: f.nome, busca: f.busca || "", site: f.site || "",
         })),
       };
 
       const resp = await cotarComIA(payload);
-      const resultados = resp.resultados || {};
 
-      // aplica em cada item: preços e urls dos fornecedores do item
-      const novosCot = { ...cotacao };
-      for (const { item, fornsDoItem } of tarefas) {
-        const atual = novosCot[item.id] || EMPTY_COT;
-        const novosPrecos = { ...(atual.precos || {}) };
-        const novasUrls   = { ...(atual.urls   || {}) };
-        const porForn = resultados[item.id] || {};
-        for (const f of fornsDoItem) {
-          const r = porForn[f.id];
-          if (!r) continue;
-          if (r.preco != null) novosPrecos[f.id] = String(r.preco).replace(".", ",");
-          if (r.url) novasUrls[f.id] = r.url;
+      if (descobertaIA) {
+        // abre modal de sugestões
+        const linhas = tarefas.map(({ item }) => ({
+          item,
+          lojas: (resp.descobertas && resp.descobertas[item.id]) || [],
+        }));
+        setModalDescobertas(linhas);
+        setResultadoIA({
+          ok: true,
+          nItens: tarefas.length,
+          descoberta: true,
+          erros: resp.erros || [],
+          usage: resp.usage,
+        });
+      } else {
+        const resultados = resp.resultados || {};
+        const novosCot = { ...cotacao };
+        for (const { item, fornsDoItem } of tarefas) {
+          const atual = novosCot[item.id] || EMPTY_COT;
+          const novosPrecos = { ...(atual.precos || {}) };
+          const novasUrls   = { ...(atual.urls   || {}) };
+          const porForn = resultados[item.id] || {};
+          for (const f of fornsDoItem) {
+            const r = porForn[f.id];
+            if (!r) continue;
+            if (r.preco != null) novosPrecos[f.id] = String(r.preco).replace(".", ",");
+            if (r.url) novasUrls[f.id] = r.url;
+          }
+          const novo = { ...atual, precos: novosPrecos, urls: novasUrls };
+          novosCot[item.id] = novo;
+          persistir(item.id, novo);
         }
-        const novo = { ...atual, precos: novosPrecos, urls: novasUrls };
-        novosCot[item.id] = novo;
-        // persiste cada um (paralelo)
-        persistir(item.id, novo);
+        setCotacao(novosCot);
+        setResultadoIA({
+          ok: true,
+          nItens: tarefas.length,
+          nForns: fornsUnicos.length,
+          stub: resp.stub,
+          modelo: resp.modelo,
+          erros: resp.erros || [],
+          usage: resp.usage,
+        });
       }
-      setCotacao(novosCot);
-      setResultadoIA({
-        ok: true,
-        nItens: tarefas.length,
-        nForns: fornsUnicos.length,
-        stub: resp.stub,
-        modelo: resp.modelo,
-        erros: resp.erros || [],
-        usage: resp.usage,
-      });
     } catch (e) {
       setResultadoIA({ ok: false, erro: e.message || String(e) });
     } finally {
       setCotandoIA(false);
     }
+  }
+
+  // Recebe seleções [{ item, loja: {nome, site, url, preco}, existente: fornecedor|null }]
+  // e aplica: cria fornecedor se for novo, marca, define preço e url fixa.
+  async function aceitarDescobertas(selecoes) {
+    const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+    const cacheFornecedores = [...fornecedores];
+
+    // 1) Criar fornecedores novos (deduplicando pelo nome)
+    for (const sel of selecoes) {
+      if (sel.existente) continue;
+      // verifica de novo no cache (pode ter sido criado nesta mesma rodada por outro item)
+      const ja = cacheFornecedores.find((f) => norm(f.nome) === norm(sel.loja.nome));
+      if (ja) { sel.existente = ja; continue; }
+      try {
+        const novo = await criarFornecedor({
+          nome:  sel.loja.nome,
+          site:  sel.loja.site || "",
+          busca: "",
+          obs:   "adicionado pela IA",
+        });
+        cacheFornecedores.push(novo);
+        sel.existente = novo;
+      } catch (e) {
+        console.warn("Falha criando fornecedor", sel.loja.nome, e);
+      }
+    }
+    setFornecedores(cacheFornecedores);
+
+    // 2) Por item, atualizar cotação: marcar fornecedor + preço + url fixa
+    const porItem = {};
+    for (const sel of selecoes) {
+      if (!sel.existente) continue;
+      const itemId = sel.item.id;
+      if (!porItem[itemId]) porItem[itemId] = [];
+      porItem[itemId].push(sel);
+    }
+
+    const novosCot = { ...cotacao };
+    for (const itemId of Object.keys(porItem)) {
+      const atual = novosCot[itemId] || EMPTY_COT;
+      const escolhidos = [...(atual.escolhidos || [])];
+      const precos     = { ...(atual.precos     || {}) };
+      const urls       = { ...(atual.urls       || {}) };
+      for (const sel of porItem[itemId]) {
+        const fid = sel.existente.id;
+        if (!escolhidos.includes(fid)) escolhidos.push(fid);
+        if (sel.loja.preco != null) precos[fid] = String(sel.loja.preco).replace(".", ",");
+        if (sel.loja.url)           urls[fid]   = sel.loja.url;
+      }
+      const novo = { ...atual, escolhidos, precos, urls };
+      novosCot[itemId] = novo;
+      await persistir(itemId, novo);
+    }
+    setCotacao(novosCot);
+    setModalDescobertas(null);
   }
 
   async function desfazerCompra(item) {
@@ -341,6 +422,10 @@ export default function Compras() {
           </span>
           <button className="mono" style={chip(modeloIA === "haiku")}  onClick={() => setModeloIA("haiku")}  title="Mais barato (~R$ 0,75 por sessão)">Haiku</button>
           <button className="mono" style={chip(modeloIA === "sonnet")} onClick={() => setModeloIA("sonnet")} title="Mais 'esperto' (~R$ 2,25 por sessão)">Sonnet</button>
+          <button className="mono" style={chip(descobertaIA)} onClick={() => setDescobertaIA((v) => !v)}
+            title="Busca o produto em qualquer farmácia online brasileira, não só nas marcadas. Devolve sugestões para aceitares.">
+            {descobertaIA ? "✓ " : ""}Modo descoberta
+          </button>
           <button onClick={() => acionarBotIA(null)} disabled={cotandoIA}
             title="Cota todos os itens visíveis que tenham fornecedores marcados"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "none", borderRadius: 6, background: cotandoIA ? "#c9c6bd" : "#2b2b28", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: cotandoIA ? "default" : "pointer", fontFamily: "'IBM Plex Sans', sans-serif" }}>
@@ -510,11 +595,19 @@ export default function Compras() {
                             style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderRadius: 6, background: "transparent", color: marcadosComSite > 0 ? "#2b2b28" : "#c9c6bd", borderColor: marcadosComSite > 0 ? "#2b2b28" : "#dedbd2", fontSize: 13, fontWeight: 600, cursor: marcadosComSite > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
                             <ExternalLink size={15} /> Cotar {marcadosComSite > 0 ? `(${marcadosComSite})` : ""}
                           </button>
-                          <button onClick={(e) => { e.stopPropagation(); acionarBotIA(item); }} disabled={nEscolhidos === 0 || cotandoIA}
-                            title={nEscolhidos === 0 ? "Marca fornecedores primeiro" : `Cotar este item em ${nEscolhidos} fornecedor(es) com IA`}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderColor: nEscolhidos > 0 && !cotandoIA ? "#b6936a" : "#dedbd2", borderRadius: 6, background: "transparent", color: nEscolhidos > 0 && !cotandoIA ? "#b6936a" : "#c9c6bd", fontSize: 13, fontWeight: 600, cursor: nEscolhidos > 0 && !cotandoIA ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
-                            <Sparkles size={15} /> Cotar este com IA
-                          </button>
+                          {(() => {
+                            const podeIA = (descobertaIA || nEscolhidos > 0) && !cotandoIA;
+                            const tit = descobertaIA
+                              ? "Descobrir lojas que vendem este produto"
+                              : (nEscolhidos === 0 ? "Marca fornecedores primeiro (ou liga Modo descoberta)" : `Cotar este item em ${nEscolhidos} fornecedor(es) com IA`);
+                            const lbl = descobertaIA ? "Descobrir lojas" : "Cotar este com IA";
+                            return (
+                              <button onClick={(e) => { e.stopPropagation(); acionarBotIA(item); }} disabled={!podeIA} title={tit}
+                                style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderColor: podeIA ? "#b6936a" : "#dedbd2", borderRadius: 6, background: "transparent", color: podeIA ? "#b6936a" : "#c9c6bd", fontSize: 13, fontWeight: 600, cursor: podeIA ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                                <Sparkles size={15} /> {lbl}
+                              </button>
+                            );
+                          })()}
                           <button onClick={(e) => { e.stopPropagation(); setModalCompra(item); }} disabled={nEscolhidos === 0}
                             style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "none", borderRadius: 6, background: nEscolhidos > 0 ? "#2b2b28" : "#c9c6bd", color: "#fff", fontSize: 13, fontWeight: 600, cursor: nEscolhidos > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
                             <Receipt size={15} /> {comprado ? "Editar compra" : "Registrar compra"}
@@ -549,6 +642,15 @@ export default function Compras() {
             );
           })}
         </div>
+      )}
+
+      {modalDescobertas && (
+        <ModalDescobertas
+          itensComDescobertas={modalDescobertas}
+          fornecedoresExistentes={fornecedores}
+          onAceitar={aceitarDescobertas}
+          onFechar={() => setModalDescobertas(null)}
+        />
       )}
 
       {modalUrl && (
