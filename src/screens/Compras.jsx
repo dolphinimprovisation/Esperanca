@@ -203,19 +203,30 @@ export default function Compras() {
     }
   }
 
-  async function acionarBotIA() {
-    // monta payload: para cada item da lista visível, com ao menos 1 fornecedor marcado
-    const tarefas = lista
-      .map((item) => {
-        const c = cotDe(item.id);
-        const fornsDoItem = fornOrdenados.filter((f) => c.escolhidos.includes(f.id));
-        return { item, fornsDoItem };
-      })
-      .filter((t) => t.fornsDoItem.length > 0);
-
-    if (tarefas.length === 0) {
-      alert("Marca primeiro pelo menos 1 fornecedor em cada item que queres cotar.");
-      return;
+  // alvo = null → todos os itens visíveis com forns marcados
+  // alvo = item específico → só esse item (com os forns que ele tem marcados)
+  async function acionarBotIA(alvo = null) {
+    let tarefas;
+    if (alvo) {
+      const c = cotDe(alvo.id);
+      const fornsDoItem = fornOrdenados.filter((f) => c.escolhidos.includes(f.id));
+      if (fornsDoItem.length === 0) {
+        alert(`Marca primeiro pelo menos 1 fornecedor em "${alvo.nome}".`);
+        return;
+      }
+      tarefas = [{ item: alvo, fornsDoItem }];
+    } else {
+      tarefas = lista
+        .map((item) => {
+          const c = cotDe(item.id);
+          const fornsDoItem = fornOrdenados.filter((f) => c.escolhidos.includes(f.id));
+          return { item, fornsDoItem };
+        })
+        .filter((t) => t.fornsDoItem.length > 0);
+      if (tarefas.length === 0) {
+        alert("Marca primeiro pelo menos 1 fornecedor em cada item que queres cotar.");
+        return;
+      }
     }
 
     // união de todos os fornecedores envolvidos
@@ -330,9 +341,10 @@ export default function Compras() {
           </span>
           <button className="mono" style={chip(modeloIA === "haiku")}  onClick={() => setModeloIA("haiku")}  title="Mais barato (~R$ 0,75 por sessão)">Haiku</button>
           <button className="mono" style={chip(modeloIA === "sonnet")} onClick={() => setModeloIA("sonnet")} title="Mais 'esperto' (~R$ 2,25 por sessão)">Sonnet</button>
-          <button onClick={acionarBotIA} disabled={cotandoIA}
+          <button onClick={() => acionarBotIA(null)} disabled={cotandoIA}
+            title="Cota todos os itens visíveis que tenham fornecedores marcados"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "none", borderRadius: 6, background: cotandoIA ? "#c9c6bd" : "#2b2b28", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: cotandoIA ? "default" : "pointer", fontFamily: "'IBM Plex Sans', sans-serif" }}>
-            <Sparkles size={13} /> {cotandoIA ? "Buscando preços..." : "Iniciar cotação"}
+            <Sparkles size={13} /> {cotandoIA ? "Buscando preços..." : "Cotar todos marcados"}
           </button>
           {resultadoIA && (
             <span className="mono" style={{ fontSize: 12, color: resultadoIA.ok ? (resultadoIA.erros?.length ? "#9a6b15" : "#1a7544") : "#a32d2d", marginLeft: 6 }}>
@@ -497,6 +509,11 @@ export default function Compras() {
                           <button onClick={(e) => { e.stopPropagation(); cotarTodos(item); }} disabled={marcadosComSite === 0}
                             style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderRadius: 6, background: "transparent", color: marcadosComSite > 0 ? "#2b2b28" : "#c9c6bd", borderColor: marcadosComSite > 0 ? "#2b2b28" : "#dedbd2", fontSize: 13, fontWeight: 600, cursor: marcadosComSite > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
                             <ExternalLink size={15} /> Cotar {marcadosComSite > 0 ? `(${marcadosComSite})` : ""}
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); acionarBotIA(item); }} disabled={nEscolhidos === 0 || cotandoIA}
+                            title={nEscolhidos === 0 ? "Marca fornecedores primeiro" : `Cotar este item em ${nEscolhidos} fornecedor(es) com IA`}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "1px solid", borderColor: nEscolhidos > 0 && !cotandoIA ? "#b6936a" : "#dedbd2", borderRadius: 6, background: "transparent", color: nEscolhidos > 0 && !cotandoIA ? "#b6936a" : "#c9c6bd", fontSize: 13, fontWeight: 600, cursor: nEscolhidos > 0 && !cotandoIA ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                            <Sparkles size={15} /> Cotar este com IA
                           </button>
                           <button onClick={(e) => { e.stopPropagation(); setModalCompra(item); }} disabled={nEscolhidos === 0}
                             style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", border: "none", borderRadius: 6, background: nEscolhidos > 0 ? "#2b2b28" : "#c9c6bd", color: "#fff", fontSize: 13, fontWeight: 600, cursor: nEscolhidos > 0 ? "pointer" : "default", fontFamily: "'IBM Plex Sans', sans-serif" }}>
